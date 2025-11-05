@@ -6,6 +6,11 @@ from models import Node, NodeCreate, RouteRequest, RouteResult
 from db import get_db
 from core import optimizer, build_graph_from_nodes, graph_visualization
 
+# Import centralized logger
+from logger_config import get_logger
+
+logger = get_logger(__name__)
+
 router = APIRouter()
 
 @router.get("/")
@@ -37,40 +42,50 @@ async def delete_node(node_id: str):
 # --------- Routing ----------
 @router.post("/route/optimize", response_model=RouteResult)
 async def optimize_route(request: RouteRequest):
-    print(f"Received raw request body: {request.dict()}")
-    graph = await build_graph_from_nodes(node_ids=request.stops)
+    logger.info(f"Route request: {request.algorithm} algorithm, {len(request.stops)} stops")
+    
+    # Get unique stops for graph building (TSP works on unique nodes)
+    unique_stops = list(dict.fromkeys(request.stops))
+    
+    graph = await build_graph_from_nodes(node_ids=unique_stops)
 
-    if len(graph.nodes) != len(request.stops):
+    if len(graph.nodes) != len(unique_stops):
+        logger.error(f"Node count mismatch: expected {len(unique_stops)}, got {len(graph.nodes)}")
         raise HTTPException(status_code=404, detail="One or more selected nodes were not found in the database.")
 
     # Check that all stops exist
-    for stop in request.stops:
+    for stop in unique_stops:
         if stop not in graph.nodes:
+            logger.error(f"Node {stop} not found in graph")
             raise HTTPException(status_code=404, detail=f"Node {stop} not found")
-
+    
     t0 = time.time()
     algo = request.algorithm.lower()
 
     if algo == "dijkstra":
         path, distance = optimizer.solve_multi_stop(graph, request.stops, "dijkstra")
     elif algo == "qaoa":
-        if len(request.stops) > 5:
+        if len(unique_stops) > 5:
             raise HTTPException(status_code=400, detail="QAOA TSP is too slow for more than 5 stops.")
-        if len(request.stops) < 3:
+        if len(unique_stops) < 3:
             raise HTTPException(status_code=400, detail="QAOA TSP requires at least 3 stops.")
-        path, distance = optimizer.solve_multi_stop(graph, request.stops, "qaoa")
+        path, distance = optimizer.solve_multi_stop(graph, unique_stops, "qaoa")
     else:
         raise HTTPException(status_code=400, detail="Invalid algorithm. Use 'dijkstra' or 'qaoa'")
 
     exec_time = time.time() - t0
+    
     if not path:
+        logger.error("No path found")
         raise HTTPException(status_code=404, detail="No path found between stops")
 
+    logger.info(f"Result: {len(path)} nodes, {distance:.2f} km, {exec_time:.2f}s")
+    
     db = await get_db()
     result = RouteResult(
         algorithm=request.algorithm,
-        start_node_id=request.stops[0],
-        end_node_id=request.stops[-1],
+        start_node_id=unique_stops[0],
+        end_node_id=unique_stops[-1],
         path=path,
         distance=distance,
         execution_time=exec_time,
