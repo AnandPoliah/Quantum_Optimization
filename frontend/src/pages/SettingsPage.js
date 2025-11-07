@@ -1,4 +1,5 @@
 import React from "react";
+import toast from 'react-hot-toast';
 
 const SettingsPage = ({ costSettings, setCostSettings }) => {
   
@@ -154,7 +155,7 @@ const SettingsPage = ({ costSettings, setCostSettings }) => {
               🔄 Reset to Defaults
             </button>
             <button
-              onClick={() => alert('Settings saved! These will be used for all cost calculations.')}
+              onClick={() => toast.success('Settings saved! These will be used for all cost calculations.')}
               className="flex-1 bg-gradient-to-r from-green-500 to-green-600 hover:from-green-600 hover:to-green-700 text-white font-bold px-6 py-4 rounded-lg shadow-lg hover:shadow-xl transition-all"
             >
               ✓ Save Settings
