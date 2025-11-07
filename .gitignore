@@ -80,4 +80,8 @@ agenthub/agents/youtube/db
 
 # Mobile development
 android-sdk/
-./backend/.env
+
+# Environment variables
+.env
+*.env
+!.env.example

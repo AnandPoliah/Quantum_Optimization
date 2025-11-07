@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { BrowserRouter as Router, Routes, Route } from "react-router-dom";
 import axios from "axios";
+import toast, { Toaster } from 'react-hot-toast';
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import "./App.css";
@@ -40,13 +41,37 @@ function App() {
       const response = await axios.get(`${API}/nodes`);
       setNodes(response.data);
     } catch (error) {
-      console.error("Error fetching nodes:", error);
+      toast.error("Failed to fetch nodes. Please check your connection.");
     }
   };
 
   return (
     <Router>
       <div className="min-h-screen bg-gradient-to-br from-indigo-50 via-purple-50 to-pink-50">
+        <Toaster 
+          position="top-right"
+          toastOptions={{
+            duration: 4000,
+            style: {
+              background: '#363636',
+              color: '#fff',
+            },
+            success: {
+              duration: 3000,
+              iconTheme: {
+                primary: '#10b981',
+                secondary: '#fff',
+              },
+            },
+            error: {
+              duration: 5000,
+              iconTheme: {
+                primary: '#ef4444',
+                secondary: '#fff',
+              },
+            },
+          }}
+        />
         <Navigation />
         <Routes>
           <Route path="/" element={<NodesPage nodes={nodes} setNodes={setNodes} fetchNodes={fetchNodes} mapCenter={mapCenter} />} />

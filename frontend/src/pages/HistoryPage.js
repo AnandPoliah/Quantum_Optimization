@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import toast from 'react-hot-toast';
 import MapView from "../components/MapView";
 
 const HistoryPage = ({ nodes, mapCenter }) => {
@@ -8,6 +9,30 @@ const HistoryPage = ({ nodes, mapCenter }) => {
 
   const BACKEND_URL = process.env.REACT_APP_BACKEND_URL;
   const API = `${BACKEND_URL}/api`;
+
+  const getAlgorithmName = (algo) => {
+    const names = {
+      dijkstra: "🚀 Dijkstra",
+      qaoa: "⚛️ QAOA",
+      genetic: "🧬 Genetic Algorithm",
+      simulated_annealing: "🔥 Simulated Annealing",
+      two_opt: "🔄 2-Opt",
+      ant_colony: "🐜 Ant Colony"
+    };
+    return names[algo?.toLowerCase()] || algo;
+  };
+
+  const getAlgorithmColor = (algo) => {
+    const colors = {
+      dijkstra: "bg-purple-200 text-purple-800",
+      qaoa: "bg-indigo-200 text-indigo-800",
+      genetic: "bg-pink-200 text-pink-800",
+      simulated_annealing: "bg-orange-200 text-orange-800",
+      two_opt: "bg-blue-200 text-blue-800",
+      ant_colony: "bg-green-200 text-green-800"
+    };
+    return colors[algo?.toLowerCase()] || "bg-gray-200 text-gray-800";
+  };
 
   useEffect(() => {
     fetchOptimizationHistory();
@@ -20,7 +45,7 @@ const HistoryPage = ({ nodes, mapCenter }) => {
       const data = await response.json();
       setOptimizationHistory(data);
     } catch (error) {
-      console.error("Error fetching optimization history:", error);
+      toast.error("Failed to fetch optimization history. Please try again.");
     } finally {
       setLoading(false);
     }
@@ -77,13 +102,9 @@ const HistoryPage = ({ nodes, mapCenter }) => {
                     >
                       <div className="flex items-center justify-between mb-2">
                         <span
-                          className={`px-3 py-1 rounded-lg text-xs font-bold ${
-                            result.algorithm === "dijkstra"
-                              ? "bg-purple-200 text-purple-800"
-                              : "bg-indigo-200 text-indigo-800"
-                          }`}
+                          className={`px-3 py-1 rounded-lg text-xs font-bold ${getAlgorithmColor(result.algorithm)}`}
                         >
-                          {result.algorithm === "dijkstra" ? "🚀 DIJKSTRA" : "⚛️ QAOA"}
+                          {getAlgorithmName(result.algorithm)}
                         </span>
                         <span className="text-xs text-gray-500">
                           {new Date(result.timestamp || Date.now()).toLocaleDateString()}
@@ -144,7 +165,7 @@ const HistoryPage = ({ nodes, mapCenter }) => {
                     <div className="p-4 bg-gradient-to-r from-gray-50 to-gray-100 rounded-lg">
                       <div className="text-sm text-gray-600 mb-1">Algorithm</div>
                       <div className="font-bold text-lg">
-                        {routeResult.algorithm === "dijkstra" ? "🚀 Dijkstra" : "⚛️ QAOA"}
+                        {getAlgorithmName(routeResult.algorithm)}
                       </div>
                     </div>
                     <div className="p-4 bg-gradient-to-r from-blue-50 to-blue-100 rounded-lg">

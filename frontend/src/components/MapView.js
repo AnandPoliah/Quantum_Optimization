@@ -1,5 +1,137 @@
-import React from "react";
-import { MapContainer, TileLayer, Marker, Popup, Polyline } from "react-leaflet";
+import React, { useEffect, useRef } from "react";
+import { MapContainer, TileLayer, Marker, Popup, Polyline, CircleMarker, useMap } from "react-leaflet";
+import L from "leaflet";
+import "leaflet-polylinedecorator";
+
+// Create custom icons for start, end, and waypoint markers
+const createNumberedIcon = (number, color) => {
+  return L.divIcon({
+    className: 'custom-div-icon',
+    html: `<div style="background-color: ${color}; width: 36px; height: 36px; border-radius: 50%; border: 3px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; font-size: 18px; box-shadow: 0 3px 10px rgba(0,0,0,0.4);">${number}</div>`,
+    iconSize: [36, 36],
+    iconAnchor: [18, 18],
+    popupAnchor: [0, -18]
+  });
+};
+
+const startIcon = L.divIcon({
+  className: 'custom-div-icon',
+  html: `<div style="background-color: #10b981; width: 40px; height: 40px; border-radius: 50%; border: 4px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; font-size: 20px; box-shadow: 0 3px 10px rgba(0,0,0,0.4);">🏁</div>`,
+  iconSize: [40, 40],
+  iconAnchor: [20, 20],
+  popupAnchor: [0, -20]
+});
+
+const endIcon = L.divIcon({
+  className: 'custom-div-icon',
+  html: `<div style="background-color: #ef4444; width: 40px; height: 40px; border-radius: 50%; border: 4px solid white; display: flex; align-items: center; justify-content: center; font-weight: bold; color: white; font-size: 20px; box-shadow: 0 3px 10px rgba(0,0,0,0.4);">🏁</div>`,
+  iconSize: [40, 40],
+  iconAnchor: [20, 20],
+  popupAnchor: [0, -20]
+});
+
+// Custom component to add arrow decorations to polylines
+const PolylineWithArrows = ({ positions, color, weight = 4, opacity = 0.9, dashArray = null }) => {
+  const map = useMap();
+  const decoratorRef = useRef(null);
+  const polylineRef = useRef(null);
+
+  useEffect(() => {
+    if (!map || !positions || positions.length < 2) return;
+
+    // Remove previous decorator if exists
+    if (decoratorRef.current) {
+      map.removeLayer(decoratorRef.current);
+    }
+    if (polylineRef.current) {
+      map.removeLayer(polylineRef.current);
+    }
+
+    // Create the main polyline
+    polylineRef.current = L.polyline(positions, {
+      color: color,
+      weight: weight,
+      opacity: opacity,
+      dashArray: dashArray,
+    }).addTo(map);
+
+    // Add arrow decorations
+    decoratorRef.current = L.polylineDecorator(polylineRef.current, {
+      patterns: [
+        {
+          offset: '10%',
+          repeat: '15%',
+          symbol: L.Symbol.arrowHead({
+            pixelSize: 12,
+            polygon: false,
+            pathOptions: {
+              stroke: true,
+              weight: 3,
+              color: color,
+              opacity: opacity,
+              fillOpacity: 0
+            }
+          })
+        }
+      ]
+    }).addTo(map);
+
+    // Cleanup function
+    return () => {
+      if (decoratorRef.current) {
+        map.removeLayer(decoratorRef.current);
+      }
+      if (polylineRef.current) {
+        map.removeLayer(polylineRef.current);
+      }
+    };
+  }, [map, positions, color, weight, opacity, dashArray]);
+
+  return null;
+};
+
+// Component to add segment labels showing route sequence
+const RouteSegmentLabels = ({ path, nodes, color }) => {
+  if (!path || path.length < 2 || !nodes || nodes.length === 0) return null;
+  
+  return (
+    <>
+      {path.slice(0, -1).map((nodeId, idx) => {
+        const node1 = nodes.find(n => n.id === nodeId);
+        const node2 = nodes.find(n => n.id === path[idx + 1]);
+        
+        if (!node1 || !node2) return null;
+        
+        // Calculate midpoint between two nodes
+        const midLat = (node1.lat + node2.lat) / 2;
+        const midLng = (node1.lng + node2.lng) / 2;
+        
+        return (
+          <CircleMarker
+            key={`segment-${idx}-${nodeId}`}
+            center={[midLat, midLng]}
+            radius={16}
+            pathOptions={{
+              color: 'white',
+              weight: 2,
+              fillColor: color,
+              fillOpacity: 0.95
+            }}
+          >
+            <Popup>
+              <div className="text-center">
+                <div className="font-semibold text-sm">Segment {idx + 1}</div>
+                <div className="text-xs text-gray-600 mt-1">
+                  {node1.name} → {node2.name}
+                </div>
+              </div>
+            </Popup>
+          </CircleMarker>
+        );
+      })}
+    </>
+  );
+};
 
 const MapView = ({ 
   nodes, 
@@ -15,12 +147,29 @@ const MapView = ({
   
   const getRouteCoordinates = (result) => {
     if (!result || !result.path) return [];
+    
+    // If route_geometry exists (actual road path), use it
+    if (result.route_geometry && result.route_geometry.length > 0) {
+      return result.route_geometry;  // Already in [lat, lng] format
+    }
+    
+    // Otherwise, fall back to connecting node positions (straight lines)
     return result.path
       .map((nodeId) => {
         const node = nodes.find((n) => n.id === nodeId);
         return node ? [node.lat, node.lng] : null;
       })
       .filter((coord) => coord !== null);
+  };
+
+  const getMarkerIcon = (idx, pathLength, color = "#3b82f6") => {
+    if (idx === 0) {
+      return startIcon;
+    } else if (idx === pathLength - 1) {
+      return endIcon;
+    } else {
+      return createNumberedIcon(idx, color);
+    }
   };
 
   return (
@@ -31,7 +180,7 @@ const MapView = ({
           <h2 className="text-2xl font-bold text-gray-800">Interactive Route Map</h2>
         </div>
         <p className="text-sm text-gray-600 mt-2 flex items-center gap-2 flex-wrap">
-          {comparisonMode && dijkstraResult && qaoaResult ? (
+          {comparisonMode && dijkstraResult && qaoaResult && dijkstraResult.distance && qaoaResult.distance ? (
             <>
               <span className="px-3 py-1 rounded-full font-semibold bg-green-200 text-green-800">
                 COMPARISON MODE
@@ -41,7 +190,7 @@ const MapView = ({
                 Blue = QAOA ({qaoaResult.distance.toFixed(2)} km)
               </span>
             </>
-          ) : routeResult ? (
+          ) : routeResult && routeResult.distance ? (
             <>
               <span className={`px-3 py-1 rounded-full font-semibold ${
                 routeResult.algorithm === "dijkstra"
@@ -50,7 +199,12 @@ const MapView = ({
               }`}>
                 {routeResult.algorithm.toUpperCase()}
               </span>
-              <span>route shown: {routeResult.distance.toFixed(2)} km</span>
+              <span>
+                route shown: {routeResult.distance.toFixed(2)} km
+                {routeResult.route_geometry && (
+                  <span className="ml-2 text-green-600 font-semibold">🛣️ Actual Road Path</span>
+                )}
+              </span>
             </>
           ) : (
             <span>👆 Select stops on the map and choose an algorithm to visualize the route</span>
@@ -110,40 +264,118 @@ const MapView = ({
 
           {/* Render single route */}
           {!comparisonMode && routeResult && getRouteCoordinates(routeResult).length > 1 && (
-            <Polyline
-              positions={getRouteCoordinates(routeResult)}
-              pathOptions={{
-                color: routeResult.algorithm === "dijkstra" ? "#7c3aed" : "#4f46e5",
-                weight: 5,
-                opacity: 0.8,
-                dashArray: "10, 10",
-              }}
-            />
+            <>
+              <PolylineWithArrows
+                positions={getRouteCoordinates(routeResult)}
+                color={routeResult.algorithm === "dijkstra" ? "#7c3aed" : "#4f46e5"}
+                weight={routeResult.route_geometry ? 5 : 6}
+                opacity={0.9}
+                dashArray={routeResult.route_geometry ? null : "10, 10"}
+              />
+              
+              {/* Route markers with start/end/waypoint distinction */}
+              {routeResult.path && routeResult.path.map((nodeId, idx) => {
+                const node = nodes.find((n) => n.id === nodeId);
+                if (!node) return null;
+
+                return (
+                  <Marker
+                    key={`route-marker-${idx}`}
+                    position={[node.lat, node.lng]}
+                    icon={getMarkerIcon(idx, routeResult.path.length, "#7c3aed")}
+                    zIndexOffset={1000}
+                  >
+                    <Popup>
+                      <div className="p-2">
+                        <div className="font-semibold text-lg mb-2">
+                          {idx === 0 ? "🟢 START" : idx === routeResult.path.length - 1 ? "🔴 END" : `📍 Stop ${idx}`}
+                        </div>
+                        <div className="font-bold text-blue-700">{node.name}</div>
+                        <div className="text-sm text-gray-600 mt-2">
+                          Position: {idx + 1} of {routeResult.path.length}
+                        </div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                );
+              })}
+            </>
           )}
 
           {/* Render comparison routes */}
           {comparisonMode && dijkstraResult && qaoaResult && (
             <>
               {/* Dijkstra Route - Purple */}
-              <Polyline
+              <PolylineWithArrows
                 positions={getRouteCoordinates(dijkstraResult)}
-                pathOptions={{
-                  color: "#7c3aed",
-                  weight: 6,
-                  opacity: 0.7,
-                  dashArray: "15, 10",
-                }}
+                color="#7c3aed"
+                weight={dijkstraResult.route_geometry ? 5 : 6}
+                opacity={0.85}
+                dashArray={dijkstraResult.route_geometry ? null : "15, 10"}
               />
+              
+              {/* Dijkstra Route Markers */}
+              {dijkstraResult.path && dijkstraResult.path.map((nodeId, idx) => {
+                const node = nodes.find((n) => n.id === nodeId);
+                if (!node) return null;
+
+                return (
+                  <Marker
+                    key={`dijkstra-marker-${idx}`}
+                    position={[node.lat, node.lng]}
+                    icon={getMarkerIcon(idx, dijkstraResult.path.length, "#7c3aed")}
+                    zIndexOffset={1000}
+                  >
+                    <Popup>
+                      <div className="p-2">
+                        <div className="font-semibold text-lg mb-2 text-purple-700">
+                          {idx === 0 ? "🟢 START" : idx === dijkstraResult.path.length - 1 ? "🔴 END" : `📍 Stop ${idx}`}
+                        </div>
+                        <div className="font-bold text-purple-700">{node.name}</div>
+                        <div className="text-sm text-gray-600 mt-2">
+                          Dijkstra Route - Position: {idx + 1} of {dijkstraResult.path.length}
+                        </div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                );
+              })}
+              
               {/* QAOA Route - Blue */}
-              <Polyline
+              <PolylineWithArrows
                 positions={getRouteCoordinates(qaoaResult)}
-                pathOptions={{
-                  color: "#4f46e5",
-                  weight: 6,
-                  opacity: 0.7,
-                  dashArray: "5, 5",
-                }}
+                color="#4f46e5"
+                weight={qaoaResult.route_geometry ? 5 : 6}
+                opacity={0.85}
+                dashArray={qaoaResult.route_geometry ? null : "5, 5"}
               />
+              
+              {/* QAOA Route Markers */}
+              {qaoaResult.path && qaoaResult.path.map((nodeId, idx) => {
+                const node = nodes.find((n) => n.id === nodeId);
+                if (!node) return null;
+
+                return (
+                  <Marker
+                    key={`qaoa-marker-${idx}`}
+                    position={[node.lat, node.lng]}
+                    icon={getMarkerIcon(idx, qaoaResult.path.length, "#4f46e5")}
+                    zIndexOffset={999}
+                  >
+                    <Popup>
+                      <div className="p-2">
+                        <div className="font-semibold text-lg mb-2 text-indigo-700">
+                          {idx === 0 ? "🟢 START" : idx === qaoaResult.path.length - 1 ? "🔴 END" : `📍 Stop ${idx}`}
+                        </div>
+                        <div className="font-bold text-indigo-700">{node.name}</div>
+                        <div className="text-sm text-gray-600 mt-2">
+                          QAOA Route - Position: {idx + 1} of {qaoaResult.path.length}
+                        </div>
+                      </div>
+                    </Popup>
+                  </Marker>
+                );
+              })}
             </>
           )}
         </MapContainer>
