@@ -3,16 +3,21 @@ import numpy as np
 import networkx as nx
 from typing import Dict, Any, List, Tuple
 from db import get_db
+import traceback
 
 from qiskit_aer import Aer
+from qiskit_aer.primitives import Sampler as AerSampler
 from qiskit_algorithms import QAOA   # ✅ comes from qiskit-algorithms
 from qiskit_algorithms.optimizers import COBYLA
 from qiskit_optimization import QuadraticProgram
 from qiskit_optimization.algorithms import MinimumEigenOptimizer
-from qiskit.primitives import Sampler
 
 from qiskit_optimization.applications import Tsp 
 
+# Import centralized logger
+from logger_config import get_logger
+
+logger = get_logger(__name__)
 
 # instead of algorithm_globals
 np.random.seed(42)
@@ -38,7 +43,8 @@ async def build_graph_from_nodes(node_ids: List[str]) -> nx.Graph:
     """
     Load a specific list of nodes from DB and construct a weighted complete graph.
     """
-    print(f"\n--- Building graph for {len(node_ids)} selected nodes ---")
+    logger.info(f"Building graph for {len(node_ids)} nodes")
+    
     db = await get_db()
     
     # Query MongoDB to find all documents where the 'id' is in our list
@@ -46,16 +52,11 @@ async def build_graph_from_nodes(node_ids: List[str]) -> nx.Graph:
     nodes_cursor = db.nodes.find(query)
     nodes = await nodes_cursor.to_list(len(node_ids))
 
-    print(f"1. Fetched {len(nodes)} matching nodes from MongoDB.")
-
     G = nx.Graph()
     for node in nodes:
         G.add_node(node['id'], name=node['name'], lat=node['lat'], lng=node['lng'])
 
-    print(f"2. Added {G.number_of_nodes()} nodes to the graph object.")
-
-    # This part remains the same, building a complete graph from the nodes we found
-    print("3. Creating edges...")
+    # Build complete graph with weighted edges
     node_list = list(G.nodes(data=True))
     for i, (n1, d1) in enumerate(node_list):
         for j, (n2, d2) in enumerate(node_list):
@@ -63,7 +64,7 @@ async def build_graph_from_nodes(node_ids: List[str]) -> nx.Graph:
                 dist = haversine_km(d1['lat'], d1['lng'], d2['lat'], d2['lng'])
                 G.add_edge(n1, n2, weight=dist)
 
-    print("--- Graph Ready ---\n")
+    logger.info(f"Graph ready: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     return G
 
 
@@ -99,46 +100,99 @@ class QuantumRouteOptimizer:
         Solves the Traveling Salesperson Problem (TSP) using QAOA.
         Finds the optimal tour that visits every node in the graph.
         """
+        num_nodes = graph.number_of_nodes()
+        logger.info(f"Starting QAOA TSP for {num_nodes} nodes")
+        
         # Pre-check: TSP needs at least 2 nodes to be meaningful.
-        if graph.number_of_nodes() < 2:
+        if num_nodes < 2:
+            logger.warning("Graph has less than 2 nodes")
             return [], 0.0
             
         try:
-            # 1. IMPORTANT: Relabel the graph nodes to integers (0, 1, 2...)
-            # The Tsp class requires an integer-labeled graph.
-            # We store the `mapping` to convert the result back later.
+            # 1. Relabel the graph nodes to integers (0, 1, 2...)
             int_graph = nx.convert_node_labels_to_integers(graph, label_attribute='original_label')
-            
-            # Create an inverse mapping to get original IDs from integer labels
             inverse_mapping = nx.get_node_attributes(int_graph, 'original_label')
 
             # 2. Create a TSP instance from the integer-labeled graph
             tsp = Tsp(int_graph)
             qp = tsp.to_quadratic_program()
 
-            # 3. Set up and run the QAOA solver
-            sampler = Sampler(options={"seed": 42})
-            qaoa = QAOA(sampler=sampler, optimizer=COBYLA(maxiter=100), reps=p)
+            # 3. Set up QAOA solver with adaptive parameters
+            if num_nodes <= 4:
+                shots = 512
+                maxiter = 50
+                reps = 2
+            else:
+                shots = 256
+                maxiter = 30
+                reps = p
+            
+            logger.info(f"QAOA params: shots={shots}, maxiter={maxiter}, reps={reps}")
+            
+            sampler = AerSampler(
+                backend_options={"method": "statevector"},
+                run_options={"shots": shots, "seed": 42}
+            )
+            qaoa = QAOA(sampler=sampler, optimizer=COBYLA(maxiter=maxiter), reps=reps)
             optimizer = MinimumEigenOptimizer(qaoa)
+            
+            logger.info("Running QAOA optimization...")
             result = optimizer.solve(qp)
+            logger.info(f"QAOA complete - fval: {result.fval if hasattr(result, 'fval') else 'N/A'}")
 
-            # 4. Interpret the result (path will be a list of integers)
-            path = tsp.interpret(result)
+            # 4. Interpret the result
+            raw_path = tsp.interpret(result)
+            
+            if raw_path is None or not raw_path:
+                logger.error("Empty path returned from TSP interpret")
+                return [], float("inf")
 
-            adj_matrix = nx.to_numpy_array(int_graph)
-        
-            distance = Tsp.tsp_value(path, adj_matrix)
+            # Normalize output: flatten nested lists and coerce to ints
+            path = raw_path
+            if path:
+                first = path[0]
+                if isinstance(first, (list, tuple, np.ndarray)) and len(path) == 1:
+                    path = list(first)
+
+            normalized: List[int] = []
+            for elem in path:
+                if isinstance(elem, (list, tuple, np.ndarray)):
+                    for sub in elem:
+                        normalized.append(int(sub))
+                else:
+                    normalized.append(int(elem))
+
+            logger.info(f"Path: {normalized}")
             
-            # 5. Use the INVERSE mapping to convert the integer path back to original node IDs
-            path_ids = [inverse_mapping[i] for i in path]
+            # Verify we have all nodes
+            if len(normalized) != num_nodes:
+                logger.error(f"Incomplete path: {len(normalized)}/{num_nodes} nodes. Missing: {set(range(num_nodes)) - set(normalized)}")
+                return [], float("inf")
+
+            adj_matrix = nx.to_numpy_array(int_graph, weight="weight")
+            distance = Tsp.tsp_value(normalized, adj_matrix)
             
-            # To make it a round trip, add the starting node to the end
-            path_ids.append(path_ids[0])
+            # 5. Convert back to original node IDs
+            path_ids = [inverse_mapping[i] for i in normalized]
+            
+            # Get node names for logging
+            node_names = [graph.nodes[node_id].get('name', node_id) for node_id in path_ids]
+
+            # Close the tour if not already closed
+            if path_ids and path_ids[0] != path_ids[-1]:
+                path_ids.append(path_ids[0])
+                closing_distance = graph[path_ids[-2]][path_ids[-1]]['weight']
+                distance += closing_distance
+                node_names.append(node_names[0])
+            
+            logger.info(f"Tour: {' → '.join(node_names)}")
+            logger.info(f"Total distance: {distance:.2f} km")
             
             return path_ids, distance
 
         except Exception as e:
-            print(f"QAOA TSP Error: {e}")
+            logger.error(f"QAOA TSP Error: {e}")
+            logger.error(traceback.format_exc())
             return [], float("inf")
 
     def solve_dijkstra(self, graph: nx.Graph, start: str, end: str) -> Tuple[List[str], float]:
@@ -148,6 +202,7 @@ class QuantumRouteOptimizer:
             dist = nx.shortest_path_length(graph, source=start, target=end, weight="weight")
             return path, dist
         except nx.NetworkXNoPath:
+            logger.error(f"No path found from {start} to {end}")
             return [], float("inf")
 
     def solve_multi_stop(self, graph: nx.Graph, stops: List[str], algorithm: str) -> Tuple[List[str], float]:
@@ -156,6 +211,7 @@ class QuantumRouteOptimizer:
         - 'dijkstra': Solves in the given order [A->B, B->C, ...].
         - 'qaoa-tsp': Solves the TSP to find the optimal order of all nodes in the graph.
         """
+        logger.info(f"Solving {algorithm} for {len(stops)} stops")
         algorithm = algorithm.lower()
 
         if algorithm == "qaoa":
@@ -169,10 +225,12 @@ class QuantumRouteOptimizer:
             full_path: List[str] = []
             total_distance: float = 0.0
 
+            # Visit stops in order
             for i in range(len(stops) - 1):
                 s, t = stops[i], stops[i+1]
                 path, dist = self.solve_dijkstra(graph, s, t)
                 if not path:
+                    logger.error(f"Failed to find path: {s} -> {t}")
                     return [], float("inf")
                 
                 if full_path:
@@ -181,9 +239,24 @@ class QuantumRouteOptimizer:
                     full_path.extend(path)
                 total_distance += dist
 
+            # Close the tour by returning to the starting point
+            start_node = stops[0]
+            end_node = stops[-1]
+            
+            if start_node != end_node:
+                path, dist = self.solve_dijkstra(graph, end_node, start_node)
+                if not path:
+                    logger.error(f"Failed to close tour: {end_node} -> {start_node}")
+                    return [], float("inf")
+                
+                full_path.extend(path[1:])
+                total_distance += dist
+            
+            logger.info(f"Dijkstra tour: {total_distance:.2f} km")
             return full_path, total_distance
             
         else:
+            logger.error(f"Invalid algorithm: {algorithm}")
             raise ValueError("Invalid algorithm specified.")
 
 

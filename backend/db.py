@@ -3,6 +3,11 @@ from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
 from typing import Optional
 
+# Import centralized logger
+from logger_config import get_logger
+
+logger = get_logger(__name__)
+
 # Load .env from project root
 load_dotenv()
 
@@ -15,6 +20,7 @@ _db = None
 async def init_client():
     global _client, _db
     if _client is None:
+        logger.info(f"Connecting to MongoDB: {_MONGO_DB}")
         _client = AsyncIOMotorClient(_MONGO_URL)
         _db = _client[_MONGO_DB]
 
@@ -26,5 +32,6 @@ async def get_db():
 async def close_client():
     global _client
     if _client is not None:
+        logger.info("Closing MongoDB connection")
         _client.close()
         _client = None
